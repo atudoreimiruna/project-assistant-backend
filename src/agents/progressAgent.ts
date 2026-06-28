@@ -98,7 +98,8 @@ Return a JSON object with exactly these fields:
 
 	let parsed: { summary: string; status: string; concerns: string[]; recommendations: string[] };
 	try {
-		parsed = JSON.parse(rawText);
+		const cleanedText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+		parsed = JSON.parse(cleanedText);
 	} catch {
 		// Fallback: treat entire response as summary if JSON parse fails
 		parsed = {

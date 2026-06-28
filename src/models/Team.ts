@@ -20,6 +20,7 @@ export interface ITeamDoc extends Document {
 	githubRepo?: string;
 	githubOwner?: string;
 	githubRepoName?: string;
+	googleDriveFolder?: string;
 	milestones: Types.DocumentArray<IMilestone>;
 }
 
@@ -50,6 +51,7 @@ const TeamSchema = new Schema<ITeamDoc>(
 		githubRepo: { type: String },
 		githubOwner: { type: String },
 		githubRepoName: { type: String },
+		googleDriveFolder: { type: String },
 		milestones: [MilestoneSchema],
 	},
 	{ timestamps: true },

@@ -2,6 +2,15 @@ import Team from '../models/Team';
 // use global fetch (Node 18+). If running on older Node, install node-fetch.
 import ActivityLog from '../models/ActivityLog';
 
+export interface ContributorPreview {
+	name: string;
+	email: string;
+	githubUsername?: string;
+	alreadyMember: boolean;
+	/** Name of existing member whose display name closely matches this contributor */
+	possibleDuplicate?: string;
+}
+
 export const parseRepoUrl = (repoUrl: string) => {
 	// supports HTTPS and git@ urls
 	try {
@@ -109,4 +118,136 @@ export const syncTeamRepo = async (teamId: string) => {
 	return { commits: commits.length, prs: prs.length };
 };
 
-export default { syncTeamRepo };
+export const addCollaborator = async (owner: string, repo: string, username: string): Promise<void> => {
+	const res = await fetch(
+		`https://api.github.com/repos/${owner}/${repo}/collaborators/${username}`,
+		{ method: 'PUT', headers: { ...getHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ permission: 'push' }) },
+	);
+	if (res.status !== 201 && res.status !== 204) {
+		const body = await res.json().catch(() => ({}));
+		throw new Error(`GitHub add collaborator failed: ${res.status} - ${(body as any).message || ''}`);
+	}
+};
+
+export const removeCollaborator = async (owner: string, repo: string, username: string): Promise<void> => {
+	const res = await fetch(
+		`https://api.github.com/repos/${owner}/${repo}/collaborators/${username}`,
+		{ method: 'DELETE', headers: getHeaders() },
+	);
+	if (res.status !== 204) {
+		const body = await res.json().catch(() => ({}));
+		throw new Error(`GitHub remove collaborator failed: ${res.status} - ${(body as any).message || ''}`);
+	}
+};
+
+export const previewGithubContributors = async (teamId: string): Promise<ContributorPreview[]> => {
+	const team = await Team.findById(teamId);
+	if (!team || !team.githubOwner || !team.githubRepoName) return [];
+	const { githubOwner: owner, githubRepoName: repo } = team;
+
+	const res = await fetch(
+		`https://api.github.com/repos/${owner}/${repo}/contributors?per_page=100`,
+		{ headers: getHeaders() },
+	);
+	if (!res.ok) return [];
+
+	const contributors = await res.json() as any[];
+	if (!Array.isArray(contributors)) return [];
+
+	const existingEmails = new Set(team.students.map((s: any) => s.email.toLowerCase()));
+	const existingUsernames = new Set(
+		team.students.filter((s: any) => s.githubUsername).map((s: any) => (s.githubUsername as string).toLowerCase()),
+	);
+	// For fuzzy name matching: lowercase names of existing members
+	const existingNames = team.students.map((s: any) => ({ name: (s.name as string).toLowerCase(), display: s.name as string }));
+
+	const previews: ContributorPreview[] = [];
+
+	for (const contributor of contributors) {
+		const login: string = contributor.login;
+		if (!login || contributor.type === 'Bot') continue;
+
+		let name = login;
+		let email = `${login}@users.noreply.github.com`;
+
+		const userRes = await fetch(`https://api.github.com/users/${login}`, { headers: getHeaders() });
+		if (userRes.ok) {
+			const user = await userRes.json() as any;
+			if (user.name) name = user.name;
+			if (user.email) email = user.email;
+		}
+
+		const alreadyMember =
+			existingUsernames.has(login.toLowerCase()) ||
+			existingEmails.has(email.toLowerCase());
+
+		// Check for a name-only near-match (not already an exact member)
+		let possibleDuplicate: string | undefined;
+		if (!alreadyMember) {
+			const lowerName = name.toLowerCase();
+			const match = existingNames.find((e) => e.name === lowerName);
+			if (match) possibleDuplicate = match.display;
+		}
+
+		previews.push({ name, email, githubUsername: login, alreadyMember, possibleDuplicate });
+	}
+
+	return previews;
+};
+
+export const importGithubContributors = async (teamId: string): Promise<void> => {
+	const team = await Team.findById(teamId);
+	if (!team || !team.githubOwner || !team.githubRepoName) return;
+	const { githubOwner: owner, githubRepoName: repo } = team;
+
+	const res = await fetch(
+		`https://api.github.com/repos/${owner}/${repo}/contributors?per_page=100`,
+		{ headers: getHeaders() },
+	);
+	if (!res.ok) return; // silently skip (e.g. private repo with no token)
+
+	const contributors = await res.json() as any[];
+	if (!Array.isArray(contributors)) return;
+
+	const existingUsernames = new Set(
+		team.students
+			.filter((s: any) => s.githubUsername)
+			.map((s: any) => (s.githubUsername as string).toLowerCase()),
+	);
+
+	for (const contributor of contributors) {
+		const login: string = contributor.login;
+		if (!login || contributor.type === 'Bot') continue;
+		if (existingUsernames.has(login.toLowerCase())) continue;
+
+		// Fetch public profile for name + email
+		let name = login;
+		let email = `${login}@users.noreply.github.com`;
+
+		const userRes = await fetch(`https://api.github.com/users/${login}`, { headers: getHeaders() });
+		if (userRes.ok) {
+			const user = await userRes.json() as any;
+			if (user.name) name = user.name;
+			if (user.email) email = user.email;
+		}
+
+		team.students.push({ name, email, githubUsername: login });
+		existingUsernames.add(login.toLowerCase());
+	}
+
+	await team.save();
+};
+
+export const syncTeamCollaborators = async (teamId: string): Promise<void> => {
+	const team = await Team.findById(teamId);
+	if (!team || !team.githubOwner || !team.githubRepoName) return;
+	const { githubOwner: owner, githubRepoName: repo } = team;
+
+	await Promise.allSettled(
+		team.students
+			.filter((s: any) => s.githubUsername)
+			.map((s: any) => addCollaborator(owner, repo, s.githubUsername!)),
+	);
+};
+
+export default { syncTeamRepo, addCollaborator, removeCollaborator, syncTeamCollaborators };

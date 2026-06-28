@@ -1,11 +1,13 @@
 import { Router, Request, Response } from 'express';
+import Team from '../models/Team';
 import { register, login, forgotPassword, resetPassword } from '../controllers/authController';
 import { createCourse, getCourses, getCourse, deleteCourse } from '../controllers/courseController';
 import { createTeam, getTeams, getTeam, updateTeam, deleteTeam, addStudentToTeam, getTeamStudents, getTeamStudent, updateTeamStudent, deleteTeamStudent } from '../controllers/teamController';
 import { protect, AuthRequest } from '../middlewares/auth';
 import ActivityLog from '../models/ActivityLog';
 import { generateTeamProgressReport, generateCourseOverview, answerTeacherQuery } from '../agents/progressAgent';
-import { syncTeamRepo } from '../services/githubService';
+import { syncTeamRepo, previewGithubContributors, ContributorPreview } from '../services/githubService';
+import { syncDriveFolder, previewDriveContributors } from '../services/driveService';
 
 const router = Router();
 
@@ -56,6 +58,60 @@ router.get('/teams/:teamId/activity', protect, async (req: Request, res: Respons
 	}
 });
 
+// Preview contributors (protected)
+// GET /teams/:teamId/preview-contributors?source=github|drive
+router.get('/teams/:teamId/preview-contributors', protect, async (req: Request, res: Response) => {
+	try {
+		const source = req.query.source as string;
+		let previews: ContributorPreview[];
+		if (source === 'github') {
+			previews = await previewGithubContributors(req.params.teamId);
+		} else if (source === 'drive') {
+			previews = await previewDriveContributors(req.params.teamId);
+		} else {
+			res.status(400).json({ message: 'source must be github or drive' });
+			return;
+		}
+		res.json(previews);
+	} catch (error) {
+		res.status(500).json({ message: 'Failed to preview contributors', error: (error as Error).message });
+	}
+});
+
+// Import selected contributors (protected)
+// POST /teams/:teamId/import-contributors
+// body: { contributors: ContributorPreview[] }
+router.post('/teams/:teamId/import-contributors', protect, async (req: Request, res: Response) => {
+	try {
+		const { contributors } = req.body as { contributors: ContributorPreview[] };
+		if (!Array.isArray(contributors)) {
+			res.status(400).json({ message: 'contributors must be an array' });
+			return;
+		}
+
+		const team = await Team.findById(req.params.teamId);
+		if (!team) { res.status(404).json({ message: 'Team not found' }); return; }
+
+		const existingEmails = new Set(team.students.map((s: any) => (s.email as string).toLowerCase()));
+		const existingUsernames = new Set(
+			team.students.filter((s: any) => s.githubUsername).map((s: any) => (s.githubUsername as string).toLowerCase()),
+		);
+
+		for (const c of contributors) {
+			if (existingEmails.has(c.email.toLowerCase())) continue;
+			if (c.githubUsername && existingUsernames.has(c.githubUsername.toLowerCase())) continue;
+			team.students.push({ name: c.name, email: c.email, githubUsername: c.githubUsername });
+			existingEmails.add(c.email.toLowerCase());
+			if (c.githubUsername) existingUsernames.add(c.githubUsername.toLowerCase());
+		}
+
+		await team.save();
+		res.json(team);
+	} catch (error) {
+		res.status(500).json({ message: 'Failed to import contributors', error: (error as Error).message });
+	}
+});
+
 // GitHub sync (protected)
 router.post('/teams/:teamId/sync-github', protect, async (req: Request, res: Response) => {
 	try {
@@ -63,6 +119,16 @@ router.post('/teams/:teamId/sync-github', protect, async (req: Request, res: Res
 		res.json({ ok: true, result });
 	} catch (error) {
 		res.status(500).json({ message: 'Failed to sync GitHub', error: (error as Error).message });
+	}
+});
+
+// Google Drive sync (protected)
+router.post('/teams/:teamId/sync-drive', protect, async (req: Request, res: Response) => {
+	try {
+		await syncDriveFolder(req.params.teamId);
+		res.json({ ok: true });
+	} catch (error) {
+		res.status(500).json({ message: 'Failed to sync Drive', error: (error as Error).message });
 	}
 });
 
