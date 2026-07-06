@@ -234,3 +234,53 @@ Answer concisely and accurately based only on the data above. If the data doesn'
 
 	return message.content[0].type === 'text' ? message.content[0].text : '';
 };
+
+// Natural language query scoped to a single team
+export const answerTeamQuery = async (query: string, teamId: string): Promise<string> => {
+	const team = await Team.findById(teamId);
+	if (!team) throw new Error('Team not found');
+
+	const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+	const activities = await ActivityLog.find({
+		teamId: team._id,
+		timestamp: { $gte: since },
+	}).sort({ timestamp: -1 });
+
+	const overdue = team.milestones.filter((m) => !m.completed && new Date(m.dueDate) < new Date());
+	const studentBreakdown = buildStudentBreakdown(activities, team.students);
+
+	const teamData = {
+		name: team.name,
+		students: team.students.map((s) => ({ name: s.name, email: s.email, githubUsername: s.githubUsername })),
+		githubRepo: team.githubRepo || null,
+		activities: activities.slice(0, 30).map((a) => ({
+			type: a.type,
+			description: a.description,
+			studentEmail: a.studentEmail,
+			timestamp: a.timestamp.toISOString(),
+		})),
+		pendingMilestones: team.milestones.filter((m) => !m.completed).map((m) => ({ title: m.title, dueDate: m.dueDate })),
+		overdueMilestones: overdue.map((m) => m.title),
+		studentBreakdown,
+	};
+
+	const prompt = `
+You are an AI assistant helping a university professor monitor a specific student project team.
+
+Team data for the last 7 days:
+${JSON.stringify(teamData, null, 2)}
+
+Professor's question: ${query}
+
+Answer concisely and accurately based only on the data above. Use student names, not emails, in your answer. If the data doesn't contain enough information to answer, say so clearly.
+`.trim();
+
+	const message = await anthropic.messages.create({
+		model: 'claude-haiku-4-5-20251001',
+		max_tokens: 400,
+		messages: [{ role: 'user', content: prompt }],
+	});
+
+	return message.content[0].type === 'text' ? message.content[0].text : '';
+};

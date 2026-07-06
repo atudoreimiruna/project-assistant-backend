@@ -5,7 +5,7 @@ import { createCourse, getCourses, getCourse, deleteCourse } from '../controller
 import { createTeam, getTeams, getTeam, updateTeam, deleteTeam, addStudentToTeam, getTeamStudents, getTeamStudent, updateTeamStudent, deleteTeamStudent } from '../controllers/teamController';
 import { protect, AuthRequest } from '../middlewares/auth';
 import ActivityLog from '../models/ActivityLog';
-import { generateTeamProgressReport, generateCourseOverview, answerTeacherQuery } from '../agents/progressAgent';
+import { generateTeamProgressReport, generateCourseOverview, answerTeacherQuery, answerTeamQuery } from '../agents/progressAgent';
 import { syncTeamRepo, previewGithubContributors, ContributorPreview } from '../services/githubService';
 import { syncDriveFolder, previewDriveContributors } from '../services/driveService';
 
@@ -168,6 +168,22 @@ router.post('/courses/:courseId/ask', protect, async (req: AuthRequest, res: Res
 			return;
 		}
 		const answer = await answerTeacherQuery(query, req.params.courseId);
+		res.json({ answer });
+	} catch (error) {
+		res.status(500).json({ message: 'Failed to process query', error });
+	}
+});
+
+// POST /teams/:teamId/ask
+// Answer a natural language question scoped to a single team
+router.post('/teams/:teamId/ask', protect, async (req: AuthRequest, res: Response) => {
+	try {
+		const { query } = req.body;
+		if (!query) {
+			res.status(400).json({ message: 'query is required' });
+			return;
+		}
+		const answer = await answerTeamQuery(query, req.params.teamId);
 		res.json({ answer });
 	} catch (error) {
 		res.status(500).json({ message: 'Failed to process query', error });
