@@ -12,6 +12,7 @@
 
 import { createSign } from 'crypto';
 import Team from '../models/Team';
+import ActivityLog from '../models/ActivityLog';
 import { ContributorPreview } from './githubService';
 
 // ── JWT / token helpers ────────────────────────────────────────────────────
@@ -181,7 +182,7 @@ export const previewDriveContributors = async (teamId: string): Promise<Contribu
 			if (match) possibleDuplicate = match.display;
 		}
 
-		previews.push({ name, email, alreadyMember, possibleDuplicate });
+		previews.push({ name, email, alreadyMember, possibleDuplicate, hasRealEmail: true });
 	}
 
 	return previews;
@@ -199,4 +200,109 @@ export const syncDriveFolder = async (teamId: string): Promise<void> => {
 	);
 };
 
-export default { addDriveMember, removeDriveMember, syncDriveFolder, previewDriveContributors, parseFolderId };
+// ── Activity sync ───────────────────────────────────────────────────────────
+
+const DRIVE_FIELDS = 'id,name,mimeType,modifiedTime,webViewLink,lastModifyingUser(displayName,emailAddress)';
+
+const mimeTypeLabel = (mimeType: string | undefined): string => {
+	switch (mimeType) {
+		case 'application/vnd.google-apps.document':
+			return 'Doc';
+		case 'application/vnd.google-apps.spreadsheet':
+			return 'Sheet';
+		case 'application/vnd.google-apps.presentation':
+			return 'Slides';
+		case 'application/vnd.google-apps.form':
+			return 'Form';
+		case 'application/vnd.google-apps.folder':
+			return 'Folder';
+		default:
+			return 'File';
+	}
+};
+
+interface DriveFile {
+	id: string;
+	name: string;
+	mimeType: string;
+	modifiedTime?: string;
+	webViewLink?: string;
+	lastModifyingUser?: { displayName?: string; emailAddress?: string };
+}
+
+const getDriveFile = async (fileId: string, token: string): Promise<DriveFile | null> => {
+	const res = await fetch(`${driveBase}/files/${fileId}?fields=${encodeURIComponent(DRIVE_FIELDS)}`, {
+		headers: { Authorization: `Bearer ${token}` },
+	});
+	if (!res.ok) return null;
+	return (await res.json()) as DriveFile;
+};
+
+/**
+ * Checks the linked Drive folder (or single Doc/Sheet/Slides link) for files
+ * modified since the last check, and logs each as a new 'document' ActivityLog
+ * entry — the Drive equivalent of the GitHub commit/PR sync triggered by the
+ * team page's "Refresh activity" button.
+ *
+ * Drive only exposes each file's *current* modifiedTime, not a history of
+ * edits, so "new update" here means "this file's modifiedTime hasn't been
+ * logged yet". Editing the same file again later produces a new modifiedTime
+ * and therefore a new log entry on the next sync.
+ */
+export const syncDriveActivity = async (teamId: string): Promise<{ filesChecked: number; newActivity: number }> => {
+	const team = await Team.findById(teamId);
+	if (!team || !team.googleDriveFolder) return { filesChecked: 0, newActivity: 0 };
+
+	const rootId = parseGoogleFileId(team.googleDriveFolder);
+	if (!rootId) throw new Error('Invalid Google document/folder URL');
+
+	const token = await getAccessToken();
+	const root = await getDriveFile(rootId, token);
+	if (!root) throw new Error('Could not read the linked Google Drive file or folder');
+
+	let files: DriveFile[];
+	if (root.mimeType === 'application/vnd.google-apps.folder') {
+		const q = `'${rootId}' in parents and trashed = false`;
+		const res = await fetch(
+			`${driveBase}/files?q=${encodeURIComponent(q)}&fields=${encodeURIComponent(`files(${DRIVE_FIELDS})`)}&pageSize=100`,
+			{ headers: { Authorization: `Bearer ${token}` } },
+		);
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({}));
+			throw new Error(`Failed to list Drive folder contents: ${res.status} - ${JSON.stringify(body)}`);
+		}
+		const data = (await res.json()) as { files?: DriveFile[] };
+		files = Array.isArray(data.files) ? data.files : [];
+	} else {
+		files = [root];
+	}
+
+	const existingEmails = new Set(team.students.map((s: any) => (s.email as string).toLowerCase()));
+
+	let newActivity = 0;
+	for (const f of files) {
+		if (f.mimeType === 'application/vnd.google-apps.folder' || !f.modifiedTime) continue;
+
+		const dedupeKey = `${f.id}:${f.modifiedTime}`;
+		const exists = await ActivityLog.findOne({ 'metadata.driveDedupeKey': dedupeKey });
+		if (exists) continue;
+
+		const authorEmail = f.lastModifyingUser?.emailAddress?.toLowerCase();
+		const studentEmail = authorEmail && existingEmails.has(authorEmail) ? authorEmail : undefined;
+		const authorName = f.lastModifyingUser?.displayName || authorEmail || 'someone';
+
+		await ActivityLog.create({
+			teamId,
+			type: 'document',
+			studentEmail,
+			description: `${mimeTypeLabel(f.mimeType)} "${f.name}" updated by ${authorName}`,
+			timestamp: new Date(f.modifiedTime),
+			metadata: { driveDedupeKey: dedupeKey, driveFileId: f.id, mimeType: f.mimeType, url: f.webViewLink },
+		});
+		newActivity++;
+	}
+
+	return { filesChecked: files.length, newActivity };
+};
+
+export default { addDriveMember, removeDriveMember, syncDriveFolder, syncDriveActivity, previewDriveContributors, parseFolderId };

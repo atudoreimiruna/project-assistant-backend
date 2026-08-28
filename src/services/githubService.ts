@@ -9,6 +9,13 @@ export interface ContributorPreview {
 	alreadyMember: boolean;
 	/** Name of existing member whose display name closely matches this contributor */
 	possibleDuplicate?: string;
+	/**
+	 * False when `email` is a fallback placeholder (`login@users.noreply.github.com`)
+	 * rather than a real, deliverable address — GitHub's public API usually
+	 * doesn't expose one. The UI should flag this and let the professor edit it
+	 * before import, instead of silently saving an address that will bounce.
+	 */
+	hasRealEmail: boolean;
 }
 
 export const parseRepoUrl = (repoUrl: string) => {
@@ -40,6 +47,71 @@ const getHeaders = () => {
 	return headers;
 };
 
+// GitHub's public "keep my email private" placeholder — never a deliverable
+// address, whether it's the bare login form or the numeric-id-prefixed form
+// GitHub uses as the commit-author email for accounts with that setting on.
+const isNoreplyEmail = (email: string | null | undefined): boolean =>
+	!!email && /@users\.noreply\.github\.com$/i.test(email);
+
+/**
+ * Best-effort real email lookup for a GitHub login. The public profile API
+ * (`GET /users/{login}`) only returns an email when the account owner has
+ * explicitly made it public, which is the exception rather than the rule —
+ * most of the time it's `null`, and naively falling back to a fake
+ * `login@users.noreply.github.com` address produces something that bounces
+ * every reminder email sent to it. As a second attempt, we look at that
+ * contributor's own recent commits in this repo: the git commit
+ * `author.email` is whatever's in their local git config, which for many
+ * people (unlike the profile email) is their everyday address — unless
+ * they've enabled GitHub's email-privacy setting, in which case GitHub
+ * rewrites it to the same noreply placeholder, and we correctly give up
+ * rather than "recover" a fake address.
+ */
+const resolveContributorProfile = async (
+	owner: string,
+	repo: string,
+	login: string,
+): Promise<{ name: string; email: string; hasRealEmail: boolean }> => {
+	let name = login;
+	let email = `${login}@users.noreply.github.com`;
+	let hasRealEmail = false;
+
+	const userRes = await fetch(`https://api.github.com/users/${login}`, { headers: getHeaders() });
+	if (userRes.ok) {
+		const user = await userRes.json() as any;
+		if (user.name) name = user.name;
+		if (user.email && !isNoreplyEmail(user.email)) {
+			email = user.email;
+			hasRealEmail = true;
+		}
+	}
+
+	if (!hasRealEmail) {
+		try {
+			const commitsRes = await fetch(
+				`https://api.github.com/repos/${owner}/${repo}/commits?author=${login}&per_page=5`,
+				{ headers: getHeaders() },
+			);
+			if (commitsRes.ok) {
+				const commits = await commitsRes.json() as any[];
+				if (Array.isArray(commits)) {
+					const realEmailCommit = commits.find(
+						(c: any) => c.commit?.author?.email && !isNoreplyEmail(c.commit.author.email),
+					);
+					if (realEmailCommit) {
+						email = realEmailCommit.commit.author.email;
+						hasRealEmail = true;
+					}
+				}
+			}
+		} catch {
+			// Best-effort only — fall through with the placeholder.
+		}
+	}
+
+	return { name, email, hasRealEmail };
+};
+
 export const syncTeamRepo = async (teamId: string) => {
 	const team = await Team.findById(teamId);
 	if (!team) throw new Error('Team not found');
@@ -56,6 +128,26 @@ export const syncTeamRepo = async (teamId: string) => {
 
 	const studentEmails = new Set((team.students || []).map((s: any) => s.email.toLowerCase()));
 
+	// GitHub's own username is a far more reliable attribution key than the git
+	// commit author's email: that email is whatever's in the contributor's local
+	// git config, which is very often a personal address or GitHub's "keep my
+	// email private" noreply alias — neither matches the roster email a student
+	// registered with. The GitHub login GitHub itself resolves for a commit/PR
+	// (and the PR author, which never even exposes an email via this API) does
+	// match what's stored as each student's githubUsername.
+	const usernameToEmail = new Map<string, string>(
+		(team.students || [])
+			.filter((s: any) => s.githubUsername)
+			.map((s: any) => [s.githubUsername.toLowerCase(), s.email.toLowerCase()]),
+	);
+
+	const resolveStudentEmail = (login: string | undefined, email: string | undefined): string | undefined => {
+		const byLogin = login && usernameToEmail.get(login.toLowerCase());
+		if (byLogin) return byLogin;
+		const lowerEmail = email?.toLowerCase();
+		return lowerEmail && studentEmails.has(lowerEmail) ? lowerEmail : undefined;
+	};
+
 	const sinceDate = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString(); // last 30 days
 
 	// fetch commits
@@ -69,11 +161,25 @@ export const syncTeamRepo = async (teamId: string) => {
 
 	for (const c of commits) {
 		const ghId = c.sha;
-		const exists = await ActivityLog.findOne({ 'metadata.githubId': ghId });
-		if (exists) continue;
+		const studentEmail = resolveStudentEmail(c.author?.login, c.commit?.author?.email);
 
-		const authorEmail = c.commit?.author?.email?.toLowerCase();
-		const studentEmail = authorEmail && studentEmails.has(authorEmail) ? authorEmail : undefined;
+		const exists = await ActivityLog.findOne({ 'metadata.githubId': ghId });
+		if (exists) {
+			// Re-attribute: this commit's author-login-based resolution is
+			// re-derived from the *current* roster on every sync, so it stays
+			// correct even after the professor edits a student's email (e.g. to
+			// replace a bad noreply placeholder) or reassigns a GitHub username —
+			// cases that used to leave already-logged activity permanently stuck
+			// pointing at whatever email was resolved the first time. We only
+			// ever apply a freshly *resolved* email, so a transient lookup miss
+			// never blanks out a good attribution that's already stored.
+			if (studentEmail && exists.studentEmail !== studentEmail) {
+				exists.studentEmail = studentEmail;
+				await exists.save();
+			}
+			continue;
+		}
+
 		const description = `Commit ${ghId} by ${c.commit?.author?.name || c.author?.login || 'unknown'}: ${c.commit?.message?.split('\n')[0]}`;
 
 		await ActivityLog.create({
@@ -82,7 +188,7 @@ export const syncTeamRepo = async (teamId: string) => {
 			studentEmail,
 			description,
 			timestamp: new Date(c.commit?.author?.date || Date.now()),
-			metadata: { githubId: ghId, url: c.html_url },
+			metadata: { githubId: ghId, url: c.html_url, githubLogin: c.author?.login },
 		});
 	}
 
@@ -97,12 +203,22 @@ export const syncTeamRepo = async (teamId: string) => {
 
 	for (const p of prs) {
 		const ghId = `pr-${p.number}`;
-		const exists = await ActivityLog.findOne({ 'metadata.githubId': ghId });
-		if (exists) continue;
+		// The pulls list endpoint never includes the author's email at all — login
+		// (GitHub username) is the only identity it gives us, and it's also the
+		// more reliable one.
+		const studentEmail = resolveStudentEmail(p.user?.login, p.user?.email);
 
-		// try to map author to student
-		const authorEmail = p.user?.email?.toLowerCase();
-		const studentEmail = authorEmail && studentEmails.has(authorEmail) ? authorEmail : undefined;
+		const exists = await ActivityLog.findOne({ 'metadata.githubId': ghId });
+		if (exists) {
+			// Same re-attribution as commits above — keeps PR activity pointed at
+			// the roster's current email for this GitHub login.
+			if (studentEmail && exists.studentEmail !== studentEmail) {
+				exists.studentEmail = studentEmail;
+				await exists.save();
+			}
+			continue;
+		}
+
 		const description = `PR #${p.number} ${p.title} by ${p.user?.login}`;
 
 		await ActivityLog.create({
@@ -111,7 +227,7 @@ export const syncTeamRepo = async (teamId: string) => {
 			studentEmail,
 			description,
 			timestamp: new Date(p.updated_at || Date.now()),
-			metadata: { githubId: ghId, url: p.html_url, state: p.state },
+			metadata: { githubId: ghId, url: p.html_url, state: p.state, githubLogin: p.user?.login },
 		});
 	}
 
@@ -167,15 +283,7 @@ export const previewGithubContributors = async (teamId: string): Promise<Contrib
 		const login: string = contributor.login;
 		if (!login || contributor.type === 'Bot') continue;
 
-		let name = login;
-		let email = `${login}@users.noreply.github.com`;
-
-		const userRes = await fetch(`https://api.github.com/users/${login}`, { headers: getHeaders() });
-		if (userRes.ok) {
-			const user = await userRes.json() as any;
-			if (user.name) name = user.name;
-			if (user.email) email = user.email;
-		}
+		const { name, email, hasRealEmail } = await resolveContributorProfile(owner, repo, login);
 
 		const alreadyMember =
 			existingUsernames.has(login.toLowerCase()) ||
@@ -189,7 +297,7 @@ export const previewGithubContributors = async (teamId: string): Promise<Contrib
 			if (match) possibleDuplicate = match.display;
 		}
 
-		previews.push({ name, email, githubUsername: login, alreadyMember, possibleDuplicate });
+		previews.push({ name, email, githubUsername: login, alreadyMember, possibleDuplicate, hasRealEmail });
 	}
 
 	return previews;
@@ -220,16 +328,7 @@ export const importGithubContributors = async (teamId: string): Promise<void> =>
 		if (!login || contributor.type === 'Bot') continue;
 		if (existingUsernames.has(login.toLowerCase())) continue;
 
-		// Fetch public profile for name + email
-		let name = login;
-		let email = `${login}@users.noreply.github.com`;
-
-		const userRes = await fetch(`https://api.github.com/users/${login}`, { headers: getHeaders() });
-		if (userRes.ok) {
-			const user = await userRes.json() as any;
-			if (user.name) name = user.name;
-			if (user.email) email = user.email;
-		}
+		const { name, email } = await resolveContributorProfile(owner, repo, login);
 
 		team.students.push({ name, email, githubUsername: login });
 		existingUsernames.add(login.toLowerCase());

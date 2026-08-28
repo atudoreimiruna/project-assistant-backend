@@ -1,7 +1,6 @@
 name: CI/CD - Backend
 
-# Stage 1 (from the thesis): "Integrarea continua" - runs on every PR into
-# main, and again (followed by the build stage) whenever a feature branch
+# Stage 1 runs on every PR into main, and whenever a feature branch
 # is merged into main.
 on:
   push:
@@ -27,9 +26,6 @@ jobs:
 
       - run: npm ci
 
-      # No eslint.config.js is committed yet, so this step is
-      # non-blocking for now - add one and drop continue-on-error
-      # once the project has a real lint config.
       - name: Lint
         run: npm run lint
         continue-on-error: true
@@ -40,7 +36,7 @@ jobs:
       - name: Test
         run: npm test
 
-  # Stage 2 (from the thesis): "Compilarea si construirea componentelor"
+  # Stage 2
   build-and-push:
     name: Build & push Docker image
     needs: test
@@ -83,7 +79,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # -----------------------------------------------------------------------
-  # Stage 3 (from the thesis): "Lansarea si rularea infrastructurii".
+  # Stage 3
   # Uncomment once you have a VPS and have added these repo secrets
   # (Settings > Secrets and variables > Actions):
   #   VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_DEPLOY_PATH

@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { errorMessage } from '../utils/errors';
 import crypto from 'crypto';
 import jwt, { Secret, SignOptions } from 'jsonwebtoken';
 import Teacher from '../models/Teacher';
@@ -28,7 +29,7 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 
 		res.status(201).json({ token, teacher: { id: teacher.id, name, email } });
 	} catch (error) {
-		res.status(500).json({ message: 'Server error', error });
+		res.status(500).json({ message: 'Server error', error: errorMessage(error) });
 	}
 };
 
@@ -45,7 +46,7 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 		const token = signToken(teacher.id, teacher.email);
 		res.json({ token, teacher: { id: teacher.id, name: teacher.name, email } });
 	} catch (error) {
-		res.status(500).json({ message: 'Server error', error });
+		res.status(500).json({ message: 'Server error', error: errorMessage(error) });
 	}
 };
 
@@ -71,7 +72,7 @@ export const forgotPassword = async (req: Request, res: Response): Promise<void>
 
 		res.json({ message: 'If that email is registered, a reset link has been sent.' });
 	} catch (error) {
-		res.status(500).json({ message: 'Server error', error });
+		res.status(500).json({ message: 'Server error', error: errorMessage(error) });
 	}
 };
 
@@ -100,6 +101,6 @@ export const resetPassword = async (req: Request, res: Response): Promise<void> 
 		const jwtToken = signToken(teacher.id, teacher.email);
 		res.json({ message: 'Password reset successful.', token: jwtToken });
 	} catch (error) {
-		res.status(500).json({ message: 'Server error', error });
+		res.status(500).json({ message: 'Server error', error: errorMessage(error) });
 	}
 };

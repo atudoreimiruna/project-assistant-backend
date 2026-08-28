@@ -1,13 +1,16 @@
 import { Router, Request, Response } from 'express';
+import { errorMessage } from '../utils/errors';
 import Team from '../models/Team';
+import Course from '../models/Course';
 import { register, login, forgotPassword, resetPassword } from '../controllers/authController';
-import { createCourse, getCourses, getCourse, deleteCourse } from '../controllers/courseController';
-import { createTeam, getTeams, getTeam, updateTeam, deleteTeam, addStudentToTeam, getTeamStudents, getTeamStudent, updateTeamStudent, deleteTeamStudent } from '../controllers/teamController';
+import { createCourse, getCourses, getCourse, deleteCourse, createCourseMilestone, updateCourseMilestone, deleteCourseMilestone } from '../controllers/courseController';
+import { createTeam, getTeams, getTeam, updateTeam, deleteTeam, addStudentToTeam, getTeamStudents, getTeamStudent, updateTeamStudent, deleteTeamStudent, updateTeamMilestone, getTeamStudentActivity, sendTeamReminders } from '../controllers/teamController';
 import { protect, AuthRequest } from '../middlewares/auth';
 import ActivityLog from '../models/ActivityLog';
-import { generateTeamProgressReport, generateCourseOverview, answerTeacherQuery, answerTeamQuery } from '../agents/progressAgent';
+import { generateTeamProgressReport, generateCourseOverview, answerTeacherQuery, answerTeamQuery, autoCheckMilestones } from '../agents/progressAgent';
 import { syncTeamRepo, previewGithubContributors, ContributorPreview } from '../services/githubService';
-import { syncDriveFolder, previewDriveContributors } from '../services/driveService';
+import { syncDriveFolder, previewDriveContributors, syncDriveActivity } from '../services/driveService';
+import { buildCourseExportWorkbook } from '../services/exportService';
 
 const router = Router();
 
@@ -23,6 +26,34 @@ router.post('/courses', protect, createCourse);
 router.get('/courses/:id', protect, getCourse);
 router.delete('/courses/:id', protect, deleteCourse);
 
+// Course-wide milestones (protected) — created here, applied to every team in the course
+router.post('/courses/:courseId/milestones', protect, createCourseMilestone);
+router.put('/courses/:courseId/milestones/:milestoneId', protect, updateCourseMilestone);
+router.delete('/courses/:courseId/milestones/:milestoneId', protect, deleteCourseMilestone);
+
+// GET /courses/:courseId/export — bulk .xlsx export of every team in the course
+// (members, per-member contribution, first/last activity, milestones)
+router.get('/courses/:courseId/export', protect, async (req: AuthRequest, res: Response) => {
+	try {
+		const course = await Course.findOne({ _id: req.params.courseId, teacherId: req.teacher?.id });
+		if (!course) {
+			res.status(404).json({ message: 'Course not found' });
+			return;
+		}
+
+		const workbook = await buildCourseExportWorkbook(req.params.courseId);
+		const safeTitle = course.title.replace(/[^a-z0-9]+/gi, '_').replace(/^_+|_+$/g, '').toLowerCase() || 'course';
+		const dateStr = new Date().toISOString().slice(0, 10);
+
+		res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+		res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}_teams_export_${dateStr}.xlsx"`);
+		await workbook.xlsx.write(res);
+		res.end();
+	} catch (error) {
+		res.status(500).json({ message: 'Failed to export course', error: errorMessage(error) });
+	}
+});
+
 // Teams (protected)
 router.get('/courses/:courseId/teams', protect, getTeams);
 router.post('/courses/:courseId/teams', protect, createTeam);
@@ -35,6 +66,25 @@ router.get('/teams/:teamId/students', protect, getTeamStudents);
 router.get('/teams/:teamId/students/:studentId', protect, getTeamStudent);
 router.put('/teams/:teamId/students/:studentId', protect, updateTeamStudent);
 router.delete('/teams/:teamId/students/:studentId', protect, deleteTeamStudent);
+router.get('/teams/:teamId/students/:studentId/activity', protect, getTeamStudentActivity);
+router.post('/teams/:teamId/send-reminder', protect, sendTeamReminders);
+
+// Per-team milestone completion toggle (protected) — the milestone itself
+// (title/description/dueDate) is managed on the course; this only flips `completed`
+router.put('/teams/:teamId/milestones/:milestoneId', protect, updateTeamMilestone);
+
+// POST /teams/:teamId/auto-check-milestones (protected)
+// Analyzes the team's recorded activity (commits/PRs/documents) and marks pending
+// milestones done wherever the AI finds clear evidence. Never un-checks a milestone —
+// a manual "done" from the professor always sticks.
+router.post('/teams/:teamId/auto-check-milestones', protect, async (req: Request, res: Response) => {
+	try {
+		const result = await autoCheckMilestones(req.params.teamId);
+		res.json({ ok: true, result });
+	} catch (error) {
+		res.status(500).json({ message: 'Failed to auto-check milestones', error: errorMessage(error) });
+	}
+});
 
 // Activity Logs (protected)
 router.post('/teams/:teamId/activity', protect, async (req: Request, res: Response) => {
@@ -45,7 +95,7 @@ router.post('/teams/:teamId/activity', protect, async (req: Request, res: Respon
 		});
 		res.status(201).json(log);
 	} catch (error) {
-		res.status(500).json({ message: 'Server error', error });
+		res.status(500).json({ message: 'Server error', error: errorMessage(error) });
 	}
 });
 
@@ -54,7 +104,7 @@ router.get('/teams/:teamId/activity', protect, async (req: Request, res: Respons
 		const logs = await ActivityLog.find({ teamId: req.params.teamId }).sort({ timestamp: -1 }).limit(50);
 		res.json(logs);
 	} catch (error) {
-		res.status(500).json({ message: 'Server error', error });
+		res.status(500).json({ message: 'Server error', error: errorMessage(error) });
 	}
 });
 
@@ -74,7 +124,7 @@ router.get('/teams/:teamId/preview-contributors', protect, async (req: Request, 
 		}
 		res.json(previews);
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to preview contributors', error: (error as Error).message });
+		res.status(500).json({ message: 'Failed to preview contributors', error: errorMessage(error) });
 	}
 });
 
@@ -108,7 +158,7 @@ router.post('/teams/:teamId/import-contributors', protect, async (req: Request, 
 		await team.save();
 		res.json(team);
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to import contributors', error: (error as Error).message });
+		res.status(500).json({ message: 'Failed to import contributors', error: errorMessage(error) });
 	}
 });
 
@@ -118,7 +168,7 @@ router.post('/teams/:teamId/sync-github', protect, async (req: Request, res: Res
 		const result = await syncTeamRepo(req.params.teamId);
 		res.json({ ok: true, result });
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to sync GitHub', error: (error as Error).message });
+		res.status(500).json({ message: 'Failed to sync GitHub', error: errorMessage(error) });
 	}
 });
 
@@ -128,7 +178,17 @@ router.post('/teams/:teamId/sync-drive', protect, async (req: Request, res: Resp
 		await syncDriveFolder(req.params.teamId);
 		res.json({ ok: true });
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to sync Drive', error: (error as Error).message });
+		res.status(500).json({ message: 'Failed to sync Drive', error: errorMessage(error) });
+	}
+});
+
+// Google Drive activity sync (protected) — checks linked Docs/Sheets/Slides for new edits
+router.post('/teams/:teamId/sync-drive-activity', protect, async (req: Request, res: Response) => {
+	try {
+		const result = await syncDriveActivity(req.params.teamId);
+		res.json({ ok: true, result });
+	} catch (error) {
+		res.status(500).json({ message: 'Failed to sync Drive activity', error: errorMessage(error) });
 	}
 });
 
@@ -143,7 +203,7 @@ router.get('/teams/:teamId/report', protect, async (req: Request, res: Response)
 		const report = await generateTeamProgressReport(req.params.teamId, forceRefresh);
 		res.json(report);
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to generate report', error });
+		res.status(500).json({ message: 'Failed to generate report', error: errorMessage(error) });
 	}
 });
 
@@ -154,7 +214,7 @@ router.get('/courses/:courseId/report', protect, async (req: Request, res: Respo
 		const overview = await generateCourseOverview(req.params.courseId);
 		res.json({ overview });
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to generate course overview', error });
+		res.status(500).json({ message: 'Failed to generate course overview', error: errorMessage(error) });
 	}
 });
 
@@ -170,7 +230,7 @@ router.post('/courses/:courseId/ask', protect, async (req: AuthRequest, res: Res
 		const answer = await answerTeacherQuery(query, req.params.courseId);
 		res.json({ answer });
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to process query', error });
+		res.status(500).json({ message: 'Failed to process query', error: errorMessage(error) });
 	}
 });
 
@@ -186,7 +246,7 @@ router.post('/teams/:teamId/ask', protect, async (req: AuthRequest, res: Respons
 		const answer = await answerTeamQuery(query, req.params.teamId);
 		res.json({ answer });
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to process query', error });
+		res.status(500).json({ message: 'Failed to process query', error: errorMessage(error) });
 	}
 });
 
