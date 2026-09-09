@@ -16,6 +16,15 @@ export interface ContributorPreview {
 	 * before import, instead of silently saving an address that will bounce.
 	 */
 	hasRealEmail: boolean;
+	/**
+	 * Google Drive only: how many revisions we found authored by this person
+	 * across the linked document(s) — actual evidence of collaboration, as
+	 * opposed to merely having sharing access. Undefined for GitHub previews
+	 * and for Drive collaborators who have access but no detected edits.
+	 */
+	editCount?: number;
+	/** Google Drive only: ISO timestamp of this person's most recent detected edit. */
+	lastEditAt?: string;
 }
 
 export const parseRepoUrl = (repoUrl: string) => {

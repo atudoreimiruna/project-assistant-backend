@@ -14,6 +14,16 @@ import { buildCourseExportWorkbook } from '../services/exportService';
 
 const router = Router();
 
+// GET /config — small set of public-ish settings the frontend needs to render
+// helpful UI, e.g. the exact address a professor must share a Drive doc with
+// for the service account to read it. Protected like everything else here,
+// but intentionally holds nothing secret (never the private key).
+router.get('/config', protect, (_req: Request, res: Response) => {
+	res.json({
+		googleDriveServiceAccountEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || null,
+	});
+});
+
 // Auth
 router.post('/auth/register', register);
 router.post('/auth/login', login);
@@ -124,7 +134,11 @@ router.get('/teams/:teamId/preview-contributors', protect, async (req: Request, 
 		}
 		res.json(previews);
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to preview contributors', error: errorMessage(error) });
+		// The frontend's error handling only ever surfaces `message` (never a
+		// separate `error` field), and for Drive previews that message is
+		// usually the actionable "share this with <service account>" text from
+		// driveService — so it has to land here, not just in a discarded field.
+		res.status(500).json({ message: errorMessage(error) });
 	}
 });
 
@@ -188,7 +202,10 @@ router.post('/teams/:teamId/sync-drive-activity', protect, async (req: Request, 
 		const result = await syncDriveActivity(req.params.teamId);
 		res.json({ ok: true, result });
 	} catch (error) {
-		res.status(500).json({ message: 'Failed to sync Drive activity', error: errorMessage(error) });
+		// Same reasoning as the preview-contributors handler above: the real,
+		// actionable message (e.g. "share this with <service account>") needs
+		// to be in `message` for the frontend to ever display it.
+		res.status(500).json({ message: errorMessage(error) });
 	}
 });
 
