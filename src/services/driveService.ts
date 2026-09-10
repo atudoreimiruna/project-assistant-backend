@@ -343,6 +343,7 @@ export const previewDriveContributors = async (teamId: string): Promise<Contribu
 			alreadyMember,
 			possibleDuplicate,
 			hasRealEmail: true,
+			source: 'drive',
 			editCount: info.editCount,
 			lastEditAt: info.lastEditAt,
 		});

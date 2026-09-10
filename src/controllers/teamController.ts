@@ -42,6 +42,22 @@ export const createTeam = async (req: AuthRequest, res: Response): Promise<void>
 			body.githubRepoName = parsed.repo;
 		}
 
+		// The "New Team" form has separate Sheets/Slides/Docs inputs, but a team
+		// only ever tracks ONE Drive resource (`googleDriveFolder`) — without
+		// this, whichever of those three the professor filled in was silently
+		// dropped by Mongoose (unknown fields aren't in the Team schema), the
+		// team was created with no Drive link at all, and its collaborators
+		// could never show up anywhere, popup included.
+		const googleWorkspaceLinks: string[] = [body.googleSheetsUrl, body.googlePresentationUrl, body.googleDocsUrl]
+			.filter((v: unknown): v is string => typeof v === 'string' && v.trim().length > 0);
+		if (googleWorkspaceLinks.length > 1) {
+			res.status(400).json({ message: 'Only one Google document (Sheets, Slides or Docs) can be linked per team right now — please fill in just one of those fields.' });
+			return;
+		}
+		if (!body.googleDriveFolder && googleWorkspaceLinks.length === 1) {
+			body.googleDriveFolder = googleWorkspaceLinks[0].trim();
+		}
+
 		if (body.googleDriveFolder && !parseGoogleFileId(body.googleDriveFolder)) {
 			res.status(400).json({ message: 'Invalid Google document URL — must be a Docs, Sheets, Slides or Drive link' });
 			return;

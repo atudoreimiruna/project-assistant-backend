@@ -16,6 +16,8 @@ export interface ContributorPreview {
 	 * before import, instead of silently saving an address that will bounce.
 	 */
 	hasRealEmail: boolean;
+	/** Which integration this preview came from. */
+	source: 'github' | 'drive';
 	/**
 	 * Google Drive only: how many revisions we found authored by this person
 	 * across the linked document(s) — actual evidence of collaboration, as
@@ -306,7 +308,7 @@ export const previewGithubContributors = async (teamId: string): Promise<Contrib
 			if (match) possibleDuplicate = match.display;
 		}
 
-		previews.push({ name, email, githubUsername: login, alreadyMember, possibleDuplicate, hasRealEmail });
+		previews.push({ name, email, githubUsername: login, alreadyMember, possibleDuplicate, hasRealEmail, source: 'github' });
 	}
 
 	return previews;
