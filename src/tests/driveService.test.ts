@@ -19,7 +19,7 @@ describe('buildRevisionActivity', () => {
 		const activity = buildRevisionActivity(teamId, file, revision, new Set(['ana@example.com']));
 
 		expect(activity.type).toBe('document');
-		expect(activity.studentEmail).toBe('ana@example.com'); // matched case-insensitively
+		expect(activity.studentEmail).toBe('ana@example.com');
 		expect(activity.description).toBe('Doc "Sprint Plan" edited by Ana Pop');
 		expect(activity.timestamp).toEqual(new Date('2026-02-10T09:30:00.000Z'));
 		expect(activity.metadata).toMatchObject({

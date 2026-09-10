@@ -1,7 +1,6 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 
-// Stub the Claude call so the graph can be exercised without an API key.
 const createMock = jest.fn();
 jest.mock('../agents/shared', () => {
 	const actual = jest.requireActual('../agents/shared');
@@ -100,11 +99,9 @@ describe('teamReportGraph', () => {
 
 		const report = await runTeamReportGraph(team.id);
 
-		// Caller still gets a degraded report...
 		expect(report.status).toBe('AT_RISK');
 		expect(report.concerns).toContain('Could not parse structured response from AI.');
-		// ...but nothing was written, so the next request retries instead of
-		// serving this for the full 24h TTL.
+
 		await expect(TeamReport.countDocuments({ teamId: team.id })).resolves.toBe(0);
 	});
 

@@ -22,7 +22,6 @@ const ActivityLogSchema = new Schema<IActivityLogDoc>({
   metadata: { type: Schema.Types.Mixed },
 });
 
-// Fast queries by team and time range
 ActivityLogSchema.index({ teamId: 1, timestamp: -1 });
 
 export default mongoose.model<IActivityLogDoc>('ActivityLog', ActivityLogSchema);

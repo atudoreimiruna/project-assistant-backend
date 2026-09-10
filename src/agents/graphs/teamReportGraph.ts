@@ -13,31 +13,24 @@ interface ParsedReport {
 	recommendations: string[];
 }
 
-/** Last-value channel with an explicit default, so nodes never read an empty channel. */
 function channel<T>(initial: () => T) {
 	return Annotation<T>({ reducer: (_prev: T, next: T) => next, default: initial });
 }
 
 const ReportState = Annotation.Root({
-	// inputs
 	teamId: channel<string>(() => ''),
 	forceRefresh: channel<boolean>(() => false),
-	// gathered
 	team: channel<ITeamDoc | null>(() => null),
 	activities: channel<IActivityLogDoc[]>(() => []),
 	studentBreakdown: channel<IStudentBreakdown[]>(() => []),
-	// generation
 	prompt: channel<string>(() => ''),
 	rawText: channel<string>(() => ''),
 	parsed: channel<ParsedReport | null>(() => null),
-	// output
 	report: channel<ITeamReportDoc | null>(() => null),
 	servedFromCache: channel<boolean>(() => false),
 });
 
 type ReportStateType = typeof ReportState.State;
-
-/* ─── Nodes ──────────────────────────────────────────────── */
 
 async function loadTeamData(state: ReportStateType) {
 	const team = await Team.findById(state.teamId);
@@ -170,8 +163,6 @@ function transientReport(state: ReportStateType) {
 	return { report };
 }
 
-/* ─── Graph ──────────────────────────────────────────────── */
-
 const graph = new StateGraph(ReportState)
 	.addNode('loadTeamData', loadTeamData)
 	.addNode('checkCache', checkCache)
@@ -182,7 +173,6 @@ const graph = new StateGraph(ReportState)
 	.addNode('transientReport', transientReport)
 	.addEdge(START, 'loadTeamData')
 	.addEdge('loadTeamData', 'checkCache')
-	// Fresh cache short-circuits the whole generation branch.
 	.addConditionalEdges('checkCache', (s: ReportStateType) => (s.servedFromCache ? END : 'buildPrompt'), [END, 'buildPrompt'])
 	.addEdge('buildPrompt', 'callClaude')
 	.addEdge('callClaude', 'parseResult')

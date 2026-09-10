@@ -1,11 +1,5 @@
 import mongoose, { Schema, Document, Types } from 'mongoose';
 
-/**
- * A course-wide milestone template. Created/edited/deleted by the teacher on
- * the course page, and cascaded (see courseController) into a linked copy on
- * every team in the course — each team then tracks its own `completed` state
- * for that copy independently on `Team.milestones`.
- */
 export interface ICourseMilestone {
   title: string;
   description?: string;

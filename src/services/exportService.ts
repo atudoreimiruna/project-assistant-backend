@@ -1,10 +1,4 @@
-/**
- * Course-wide "export all teams" — builds an .xlsx workbook with one summary
- * sheet plus one sheet per team, covering members, per-member contribution,
- * and first/last activity. Stats are computed over the team's *entire*
- * activity history (not the 7-day window the AI report uses), since this is
- * meant to be an archival/reporting artifact rather than a live snapshot.
- */
+
 
 import ExcelJS from 'exceljs';
 import Course from '../models/Course';
@@ -32,12 +26,6 @@ interface StudentExportRow {
 
 const fmtDate = (d: Date | null | undefined): string => (d ? d.toISOString().slice(0, 10) : '—');
 
-/**
- * Per-member breakdown across the full activity history handed in. Mirrors
- * agents/shared.ts#buildStudentBreakdown's scoring (commits + PRs*2, relative
- * to the team's top contributor) but also folds in Drive document edits and
- * tracks each member's first/last activity date.
- */
 function buildExportBreakdown(activities: IActivityLogDoc[], students: ExportStudent[]): StudentExportRow[] {
 	const byEmail: Record<string, { commits: number; prs: number; documents: number; first: Date; last: Date }> = {};
 
@@ -88,7 +76,6 @@ function buildExportBreakdown(activities: IActivityLogDoc[], students: ExportStu
 	});
 }
 
-/** Excel sheet names: <=31 chars, no : \ / ? * [ ], and must be unique per workbook. */
 const sanitizeSheetName = (name: string, used: Set<string>): string => {
 	const base = name.replace(/[:\\/?*[\]]/g, ' ').trim().slice(0, 31) || 'Team';
 	let candidate = base;

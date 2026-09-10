@@ -42,14 +42,7 @@ export const createTeam = async (req: AuthRequest, res: Response): Promise<void>
 			body.githubRepoName = parsed.repo;
 		}
 
-		// The "New Team" form has separate Sheets/Slides/Docs inputs, but a team
-		// only ever tracks ONE Drive resource (`googleDriveFolder`) — without
-		// this, whichever of those three the professor filled in was silently
-		// dropped by Mongoose (unknown fields aren't in the Team schema), the
-		// team was created with no Drive link at all, and its collaborators
-		// could never show up anywhere, popup included.
-		const googleWorkspaceLinks: string[] = [body.googleSheetsUrl, body.googlePresentationUrl, body.googleDocsUrl]
-			.filter((v: unknown): v is string => typeof v === 'string' && v.trim().length > 0);
+		const googleWorkspaceLinks: string[] = [body.googleSheetsUrl, body.googlePresentationUrl, body.googleDocsUrl].filter((v: unknown): v is string => typeof v === 'string' && v.trim().length > 0);
 		if (googleWorkspaceLinks.length > 1) {
 			res.status(400).json({ message: 'Only one Google document (Sheets, Slides or Docs) can be linked per team right now — please fill in just one of those fields.' });
 			return;
@@ -63,9 +56,6 @@ export const createTeam = async (req: AuthRequest, res: Response): Promise<void>
 			return;
 		}
 
-		// Seed every course-wide milestone onto the new team (own completed flag,
-		// linked back via courseMilestoneId so course-level edits/deletes find it).
-		// Always derived from the course, never from client input.
 		body.milestones = course.milestones.map((m) => ({
 			title: m.title,
 			description: m.description,
@@ -76,8 +66,6 @@ export const createTeam = async (req: AuthRequest, res: Response): Promise<void>
 
 		const team = await Team.create(body);
 
-		// Fire-and-forget: sync activity logs + add initial students to GitHub/Drive
-		// (contributor import is handled explicitly via the preview/import flow)
 		if (team.githubOwner) {
 			syncTeamRepo(team.id).catch(() => {});
 			syncTeamCollaborators(team.id).catch(() => {});
@@ -150,12 +138,12 @@ export const updateTeam = async (req: AuthRequest, res: Response): Promise<void>
 		await team.save();
 
 		if (repoChanged) {
-			syncTeamRepo(team.id).catch(() => {});          // sync activity logs
-			syncTeamCollaborators(team.id).catch(() => {}); // add all students as collaborators
+			syncTeamRepo(team.id).catch(() => {});
+			syncTeamCollaborators(team.id).catch(() => {});
 		}
 
 		if (driveChanged) {
-			syncDriveFolder(team.id).catch(() => {}); // share folder with all students
+			syncDriveFolder(team.id).catch(() => {});
 		}
 
 		res.json(team);
@@ -191,12 +179,10 @@ export const addStudentToTeam = async (req: AuthRequest, res: Response): Promise
 		await team.save();
 		const student = team.students[team.students.length - 1];
 
-		// Auto-add to GitHub as collaborator
 		if (team.githubOwner && team.githubRepoName && student.githubUsername) {
 			addCollaborator(team.githubOwner, team.githubRepoName, student.githubUsername).catch(() => {});
 		}
 
-		// Auto-share Google Drive folder
 		if (team.googleDriveFolder) {
 			const folderId = parseGoogleFileId(team.googleDriveFolder);
 			if (folderId) addDriveMember(folderId, student.email).catch(() => {});
@@ -264,10 +250,6 @@ export const updateTeamStudent = async (req: AuthRequest, res: Response): Promis
 	}
 };
 
-// POST /teams/:teamId/send-reminder
-// Emails every student on the team about all of the team's still-open
-// milestones (title, due date, flagged if already overdue). Can be fired at
-// any time from the team page — not tied to any specific schedule.
 export const sendTeamReminders = async (req: AuthRequest, res: Response): Promise<void> => {
 	try {
 		const team = await verifyTeamOwnership(req.params.teamId, req.teacher?.id);
@@ -289,9 +271,7 @@ export const sendTeamReminders = async (req: AuthRequest, res: Response): Promis
 
 		const milestones = pending.map((m) => ({ title: m.title, description: m.description, dueDate: m.dueDate }));
 
-		const results = await Promise.allSettled(
-			team.students.map((s) => sendDeadlineReminderEmail(s.email, s.name, team.name, milestones)),
-		);
+		const results = await Promise.allSettled(team.students.map((s) => sendDeadlineReminderEmail(s.email, s.name, team.name, milestones)));
 
 		const studentsEmailed = results.filter((r) => r.status === 'fulfilled').length;
 		const failed = results.length - studentsEmailed;
@@ -302,10 +282,6 @@ export const sendTeamReminders = async (req: AuthRequest, res: Response): Promis
 	}
 };
 
-// GET /teams/:teamId/students/:studentId/activity
-// This student's own commits/PRs/document edits, most recent first — used by
-// the student detail page to show their real repo/doc activity rather than
-// the whole team's feed.
 export const getTeamStudentActivity = async (req: AuthRequest, res: Response): Promise<void> => {
 	try {
 		const team = await verifyTeamOwnership(req.params.teamId, req.teacher?.id);
@@ -333,9 +309,6 @@ export const getTeamStudentActivity = async (req: AuthRequest, res: Response): P
 	}
 };
 
-// Per-team milestone completion toggle. Title/description/dueDate are
-// managed course-wide (see courseController) — this only ever touches
-// `completed` for this one team's copy.
 export const updateTeamMilestone = async (req: AuthRequest, res: Response): Promise<void> => {
 	try {
 		const team = await verifyTeamOwnership(req.params.teamId, req.teacher?.id);
@@ -372,18 +345,15 @@ export const deleteTeamStudent = async (req: AuthRequest, res: Response): Promis
 			return;
 		}
 
-		// Capture before removing
 		const { githubUsername, email } = student;
 
 		team.students = team.students.filter((s) => s._id.toString() !== req.params.studentId) as typeof team.students;
 		await team.save();
 
-		// Auto-remove from GitHub
 		if (team.githubOwner && team.githubRepoName && githubUsername) {
 			removeCollaborator(team.githubOwner, team.githubRepoName, githubUsername).catch(() => {});
 		}
 
-		// Auto-remove from Google Drive
 		if (team.googleDriveFolder) {
 			const folderId = parseGoogleFileId(team.googleDriveFolder);
 			if (folderId) removeDriveMember(folderId, email).catch(() => {});

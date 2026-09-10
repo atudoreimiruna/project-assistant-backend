@@ -4,19 +4,13 @@ import { IStudentBreakdown } from '../models/TeamReport';
 
 export const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// How old a cached report can be before we regenerate (in ms). 24 hours.
 export const REPORT_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** Window of activity every prompt in this module reasons over. */
 export const ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const activitySince = (): Date => new Date(Date.now() - ACTIVITY_WINDOW_MS);
 
-// Count commits/PRs per student email from activity logs.
-export function buildStudentBreakdown(
-	activities: IActivityLogDoc[],
-	students: { name: string; email: string }[],
-): IStudentBreakdown[] {
+export function buildStudentBreakdown(activities: IActivityLogDoc[], students: { name: string; email: string }[]): IStudentBreakdown[] {
 	const byEmail: Record<string, { commits: number; prs: number }> = {};
 
 	for (const a of activities) {
@@ -43,7 +37,6 @@ export function buildStudentBreakdown(
 	});
 }
 
-/** Claude may return more than one content block; take the first text one. */
 export function firstTextBlock(message: Anthropic.Message): string {
 	for (const block of message.content) {
 		if (block.type === 'text') return block.text;

@@ -55,7 +55,6 @@ export const forgotPassword = async (req: Request, res: Response): Promise<void>
 		const { email } = req.body;
 
 		const teacher = await Teacher.findOne({ email });
-		// Always respond with success to avoid leaking which emails are registered
 		if (!teacher) {
 			res.json({ message: 'If that email is registered, a reset link has been sent.' });
 			return;

@@ -1,21 +1,9 @@
-/**
- * Google Drive service — manages folder permissions for team members.
- *
- * Requires environment variables:
- *   GOOGLE_SERVICE_ACCOUNT_EMAIL  — the service account email
- *   GOOGLE_SERVICE_ACCOUNT_KEY    — the private key (PEM, newlines as \n)
- *
- * The service account must have been granted editor/organizer access to
- * every Drive folder that will be shared with students (domain-wide
- * delegation is NOT required; just pre-share the folder with the SA first).
- */
+
 
 import { createSign } from 'crypto';
 import Team from '../models/Team';
 import ActivityLog from '../models/ActivityLog';
 import { ContributorPreview } from './githubService';
-
-// ── JWT / token helpers ────────────────────────────────────────────────────
 
 const SCOPES = 'https://www.googleapis.com/auth/drive';
 
@@ -62,44 +50,27 @@ const getAccessToken = async (): Promise<string> => {
 	return cachedToken.token;
 };
 
-// ── Extract file/folder ID from a Drive URL or raw ID ─────────────────────
-
-/**
- * Extracts the Google file/folder ID from any Google URL or a raw ID.
- *
- * Supported patterns:
- *   Drive folder  — https://drive.google.com/drive/folders/<id>
- *   Drive open    — https://drive.google.com/open?id=<id>
- *   Docs          — https://docs.google.com/document/d/<id>/...
- *   Sheets        — https://docs.google.com/spreadsheets/d/<id>/...
- *   Slides        — https://docs.google.com/presentation/d/<id>/...
- *   Forms         — https://docs.google.com/forms/d/<id>/...
- *   Raw ID        — any 25–44 char alphanumeric/dash/underscore string
- */
 export const parseGoogleFileId = (input: string): string | null => {
 	if (!input) return null;
 	try {
 		const u = new URL(input);
-		// /d/<id>/ — covers Docs, Sheets, Slides, Forms
+
 		const dMatch = u.pathname.match(/\/d\/([a-zA-Z0-9_-]+)/);
 		if (dMatch) return dMatch[1];
-		// /folders/<id>
+
 		const folderMatch = u.pathname.match(/\/folders\/([a-zA-Z0-9_-]+)/);
 		if (folderMatch) return folderMatch[1];
-		// ?id=<id>
+
 		const idParam = u.searchParams.get('id');
 		if (idParam) return idParam;
 	} catch {
-		// not a URL — treat as raw ID
+
 		if (/^[a-zA-Z0-9_-]{25,}$/.test(input)) return input;
 	}
 	return null;
 };
 
-/** @deprecated use parseGoogleFileId */
 export const parseFolderId = parseGoogleFileId;
-
-// ── Permission helpers ─────────────────────────────────────────────────────
 
 const driveBase = 'https://www.googleapis.com/drive/v3';
 
@@ -119,7 +90,6 @@ export const addDriveMember = async (folderId: string, email: string): Promise<v
 export const removeDriveMember = async (folderId: string, email: string): Promise<void> => {
 	const token = await getAccessToken();
 
-	// First find the permissionId for this email
 	const listRes = await fetch(`${driveBase}/files/${folderId}/permissions?fields=permissions(id,emailAddress)`, {
 		headers: { Authorization: `Bearer ${token}` },
 	});
@@ -177,14 +147,6 @@ const getDriveFile = async (fileId: string, token: string): Promise<DriveFile | 
 	return (await res.json()) as DriveFile;
 };
 
-/**
- * The service account can only read a Doc/Sheet/Slides/folder that's been
- * explicitly shared with it — unlike a student's own Drive, it has no
- * standing access to anything. When `getDriveFile` comes back null this is
- * overwhelmingly why, so every caller that can't proceed without the root
- * file should throw this rather than a generic "not found", since a bad
- * link and a missing share look identical from here.
- */
 const notSharedWithServiceAccountError = (): Error => {
 	const sa = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
 	return new Error(
@@ -194,12 +156,6 @@ const notSharedWithServiceAccountError = (): Error => {
 	);
 };
 
-/**
- * Every non-folder file "in scope" for a team's linked Drive item: just that
- * item if it's a single Doc/Sheet/Slides link, or every direct child if it's
- * a folder link. Shared by the contributor preview and the activity sync so
- * both look at exactly the same set of files.
- */
 const listScopedFiles = async (root: DriveFile, rootId: string, token: string): Promise<DriveFile[]> => {
 	if (root.mimeType !== 'application/vnd.google-apps.folder') return [root];
 
@@ -229,16 +185,6 @@ export interface DriveRevision {
 
 const REVISION_FIELDS = 'nextPageToken,revisions(id,modifiedTime,lastModifyingUser(displayName,emailAddress))';
 
-/**
- * Full edit history for one file via the Drive Revisions API — every past
- * save, each with who made it and when, which is what lets us log every
- * collaborator's edits over time instead of only the file's current state.
- *
- * Not every file keeps a revision history (Forms and a few other types
- * don't, and a fresh file may have none yet), so an empty array here means
- * "no history available", not an error — callers should fall back to the
- * file's current lastModifyingUser/modifiedTime instead.
- */
 const listFileRevisions = async (fileId: string, token: string): Promise<DriveRevision[]> => {
 	const revisions: DriveRevision[] = [];
 	let pageToken: string | undefined;
@@ -257,15 +203,6 @@ const listFileRevisions = async (fileId: string, token: string): Promise<DriveRe
 	return revisions;
 };
 
-/**
- * Who actually collaborated on the linked document(s), not just who has
- * sharing access. Merges two signals:
- *   - sharing permissions on the linked file/folder ("has access")
- *   - authorship pulled from each file's revision history ("has edited",
- *     with an edit count and the timestamp of their most recent edit)
- * A person can show up from either signal or both; editors are listed first
- * since an actual edit is stronger evidence of collaboration than access.
- */
 export const previewDriveContributors = async (teamId: string): Promise<ContributorPreview[]> => {
 	const team = await Team.findById(teamId);
 	if (!team || !team.googleDriveFolder) return [];
@@ -280,7 +217,6 @@ export const previewDriveContributors = async (teamId: string): Promise<Contribu
 
 	const files = await listScopedFiles(root, folderId, token);
 
-	// Signal 1: who has been granted access to the file/folder.
 	const permRes = await fetch(
 		`${driveBase}/files/${folderId}/permissions?fields=permissions(emailAddress,displayName,role,type)`,
 		{ headers: { Authorization: `Bearer ${token}` } },
@@ -289,7 +225,6 @@ export const previewDriveContributors = async (teamId: string): Promise<Contribu
 		? (((await permRes.json()) as { permissions?: { emailAddress?: string; displayName?: string; role: string; type: string }[] }).permissions ?? [])
 		: [];
 
-	// Signal 2: who actually edited, aggregated across every file in scope.
 	const editorStats = new Map<string, { name: string; count: number; lastEditAt: string }>();
 	for (const f of files) {
 		const revisions = await listFileRevisions(f.id, token);
@@ -349,7 +284,6 @@ export const previewDriveContributors = async (teamId: string): Promise<Contribu
 		});
 	}
 
-	// Proven editors first (most edits first), then access-only collaborators.
 	previews.sort((a, b) => (b.editCount ?? 0) - (a.editCount ?? 0));
 
 	return previews;
@@ -367,8 +301,6 @@ export const syncDriveFolder = async (teamId: string): Promise<void> => {
 	);
 };
 
-// ── Activity sync ───────────────────────────────────────────────────────────
-
 interface ScopedDriveFileInfo {
 	id: string;
 	name: string;
@@ -376,12 +308,6 @@ interface ScopedDriveFileInfo {
 	webViewLink?: string;
 }
 
-/**
- * Builds the ActivityLog fields for one past edit of one file, given a
- * revision pulled from listFileRevisions(). Pure and DB-free on purpose —
- * it's the piece worth unit testing (student attribution, description
- * format), separately from the network calls around it.
- */
 export const buildRevisionActivity = (
 	teamId: string,
 	file: ScopedDriveFileInfo,
@@ -403,19 +329,6 @@ export const buildRevisionActivity = (
 	};
 };
 
-/**
- * Checks the linked Drive folder (or single Doc/Sheet/Slides link) for new
- * activity and logs each as a 'document' ActivityLog entry — the Drive
- * equivalent of the GitHub commit/PR sync triggered by the team page's
- * "Refresh activity" button.
- *
- * For each file this walks its full revision history (see listFileRevisions)
- * and logs one entry per past edit, attributed to whoever made it — so a
- * team's document activity reads like GitHub's commit history: every
- * collaborator, every time they touched the file. Files that don't expose a
- * revision history (e.g. Forms) fall back to a single entry for their
- * current lastModifyingUser/modifiedTime, same as before this existed.
- */
 export const syncDriveActivity = async (teamId: string): Promise<{ filesChecked: number; newActivity: number }> => {
 	const team = await Team.findById(teamId);
 	if (!team || !team.googleDriveFolder) return { filesChecked: 0, newActivity: 0 };
@@ -446,7 +359,6 @@ export const syncDriveActivity = async (teamId: string): Promise<{ filesChecked:
 			continue;
 		}
 
-		// No revision history for this file — fall back to its current state.
 		if (!f.modifiedTime) continue;
 		const dedupeKey = `${f.id}:${f.modifiedTime}`;
 		const exists = await ActivityLog.findOne({ 'metadata.driveDedupeKey': dedupeKey });

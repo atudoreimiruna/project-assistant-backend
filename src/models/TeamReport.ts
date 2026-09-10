@@ -5,21 +5,21 @@ export interface IStudentBreakdown {
   name: string;
   commits: number;
   prs: number;
-  contributionScore: number; // 0-100 rough score
+  contributionScore: number;
 }
 
 export interface ITeamReportDoc extends Document {
   teamId: Types.ObjectId;
   generatedAt: Date;
-  // raw activity snapshot used to generate this report
+
   activityCount: number;
-  // structured output from Claude
+
   summary: string;
   status: 'ON_TRACK' | 'AT_RISK' | 'BLOCKED';
   concerns: string[];
   recommendations: string[];
   studentBreakdown: IStudentBreakdown[];
-  // full raw text for debugging / display
+
   rawText: string;
 }
 
@@ -53,7 +53,6 @@ const TeamReportSchema = new Schema<ITeamReportDoc>(
   { timestamps: true },
 );
 
-// Keep only the latest report per team easily retrievable
 TeamReportSchema.index({ teamId: 1, generatedAt: -1 });
 
 export default mongoose.model<ITeamReportDoc>('TeamReport', TeamReportSchema);

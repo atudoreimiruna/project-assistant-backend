@@ -1,5 +1,5 @@
 import Team from '../models/Team';
-// use global fetch (Node 18+). If running on older Node, install node-fetch.
+
 import ActivityLog from '../models/ActivityLog';
 
 export interface ContributorPreview {
@@ -7,33 +7,23 @@ export interface ContributorPreview {
 	email: string;
 	githubUsername?: string;
 	alreadyMember: boolean;
-	/** Name of existing member whose display name closely matches this contributor */
+
 	possibleDuplicate?: string;
-	/**
-	 * False when `email` is a fallback placeholder (`login@users.noreply.github.com`)
-	 * rather than a real, deliverable address — GitHub's public API usually
-	 * doesn't expose one. The UI should flag this and let the professor edit it
-	 * before import, instead of silently saving an address that will bounce.
-	 */
+
 	hasRealEmail: boolean;
-	/** Which integration this preview came from. */
+
 	source: 'github' | 'drive';
-	/**
-	 * Google Drive only: how many revisions we found authored by this person
-	 * across the linked document(s) — actual evidence of collaboration, as
-	 * opposed to merely having sharing access. Undefined for GitHub previews
-	 * and for Drive collaborators who have access but no detected edits.
-	 */
+
 	editCount?: number;
-	/** Google Drive only: ISO timestamp of this person's most recent detected edit. */
+
 	lastEditAt?: string;
 }
 
 export const parseRepoUrl = (repoUrl: string) => {
-	// supports HTTPS and git@ urls
+
 	try {
 		if (repoUrl.startsWith('git@')) {
-			// git@github.com:owner/repo.git
+
 			const parts = repoUrl.split(':')[1].replace(/\.git$/, '');
 			const [owner, repo] = parts.split('/');
 			return { owner, repo };
@@ -58,26 +48,9 @@ const getHeaders = () => {
 	return headers;
 };
 
-// GitHub's public "keep my email private" placeholder — never a deliverable
-// address, whether it's the bare login form or the numeric-id-prefixed form
-// GitHub uses as the commit-author email for accounts with that setting on.
 const isNoreplyEmail = (email: string | null | undefined): boolean =>
 	!!email && /@users\.noreply\.github\.com$/i.test(email);
 
-/**
- * Best-effort real email lookup for a GitHub login. The public profile API
- * (`GET /users/{login}`) only returns an email when the account owner has
- * explicitly made it public, which is the exception rather than the rule —
- * most of the time it's `null`, and naively falling back to a fake
- * `login@users.noreply.github.com` address produces something that bounces
- * every reminder email sent to it. As a second attempt, we look at that
- * contributor's own recent commits in this repo: the git commit
- * `author.email` is whatever's in their local git config, which for many
- * people (unlike the profile email) is their everyday address — unless
- * they've enabled GitHub's email-privacy setting, in which case GitHub
- * rewrites it to the same noreply placeholder, and we correctly give up
- * rather than "recover" a fake address.
- */
 const resolveContributorProfile = async (
 	owner: string,
 	repo: string,
@@ -116,7 +89,7 @@ const resolveContributorProfile = async (
 				}
 			}
 		} catch {
-			// Best-effort only — fall through with the placeholder.
+
 		}
 	}
 
@@ -139,13 +112,6 @@ export const syncTeamRepo = async (teamId: string) => {
 
 	const studentEmails = new Set((team.students || []).map((s: any) => s.email.toLowerCase()));
 
-	// GitHub's own username is a far more reliable attribution key than the git
-	// commit author's email: that email is whatever's in the contributor's local
-	// git config, which is very often a personal address or GitHub's "keep my
-	// email private" noreply alias — neither matches the roster email a student
-	// registered with. The GitHub login GitHub itself resolves for a commit/PR
-	// (and the PR author, which never even exposes an email via this API) does
-	// match what's stored as each student's githubUsername.
 	const usernameToEmail = new Map<string, string>(
 		(team.students || [])
 			.filter((s: any) => s.githubUsername)
@@ -161,7 +127,6 @@ export const syncTeamRepo = async (teamId: string) => {
 
 	const sinceDate = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString(); // last 30 days
 
-	// fetch commits
 	const commitsRes = await fetch(`https://api.github.com/repos/${repo.owner}/${repo.repo}/commits?since=${sinceDate}&per_page=100`, { headers: getHeaders() });
 	if (!commitsRes.ok) {
 		const errBody = await commitsRes.json().catch(() => ({}));
@@ -176,14 +141,7 @@ export const syncTeamRepo = async (teamId: string) => {
 
 		const exists = await ActivityLog.findOne({ 'metadata.githubId': ghId });
 		if (exists) {
-			// Re-attribute: this commit's author-login-based resolution is
-			// re-derived from the *current* roster on every sync, so it stays
-			// correct even after the professor edits a student's email (e.g. to
-			// replace a bad noreply placeholder) or reassigns a GitHub username —
-			// cases that used to leave already-logged activity permanently stuck
-			// pointing at whatever email was resolved the first time. We only
-			// ever apply a freshly *resolved* email, so a transient lookup miss
-			// never blanks out a good attribution that's already stored.
+
 			if (studentEmail && exists.studentEmail !== studentEmail) {
 				exists.studentEmail = studentEmail;
 				await exists.save();
@@ -203,7 +161,6 @@ export const syncTeamRepo = async (teamId: string) => {
 		});
 	}
 
-	// fetch PRs (recently updated)
 	const prsRes = await fetch(`https://api.github.com/repos/${repo.owner}/${repo.repo}/pulls?state=all&sort=updated&direction=desc&per_page=100`, { headers: getHeaders() });
 	if (!prsRes.ok) {
 		const errBody = await prsRes.json().catch(() => ({}));
@@ -214,15 +171,12 @@ export const syncTeamRepo = async (teamId: string) => {
 
 	for (const p of prs) {
 		const ghId = `pr-${p.number}`;
-		// The pulls list endpoint never includes the author's email at all — login
-		// (GitHub username) is the only identity it gives us, and it's also the
-		// more reliable one.
+
 		const studentEmail = resolveStudentEmail(p.user?.login, p.user?.email);
 
 		const exists = await ActivityLog.findOne({ 'metadata.githubId': ghId });
 		if (exists) {
-			// Same re-attribution as commits above — keeps PR activity pointed at
-			// the roster's current email for this GitHub login.
+
 			if (studentEmail && exists.studentEmail !== studentEmail) {
 				exists.studentEmail = studentEmail;
 				await exists.save();
@@ -285,7 +239,7 @@ export const previewGithubContributors = async (teamId: string): Promise<Contrib
 	const existingUsernames = new Set(
 		team.students.filter((s: any) => s.githubUsername).map((s: any) => (s.githubUsername as string).toLowerCase()),
 	);
-	// For fuzzy name matching: lowercase names of existing members
+
 	const existingNames = team.students.map((s: any) => ({ name: (s.name as string).toLowerCase(), display: s.name as string }));
 
 	const previews: ContributorPreview[] = [];
@@ -300,7 +254,6 @@ export const previewGithubContributors = async (teamId: string): Promise<Contrib
 			existingUsernames.has(login.toLowerCase()) ||
 			existingEmails.has(email.toLowerCase());
 
-		// Check for a name-only near-match (not already an exact member)
 		let possibleDuplicate: string | undefined;
 		if (!alreadyMember) {
 			const lowerName = name.toLowerCase();

@@ -7,26 +7,8 @@ import { anthropic, buildStudentBreakdown, firstTextBlock, activitySince } from 
 export { buildStudentBreakdown } from './shared';
 export { teamReportGraph } from './graphs/teamReportGraph';
 
-/**
- * Per-team progress report.
- *
- * The flow is a LangGraph state machine (see graphs/teamReportGraph.ts):
- *   load team data -> check cache -(fresh?)-> end
- *                                 \-> build prompt -> call Claude -> parse
- *                                       -(ok?)-> persist -> end
- *                                       -(no)-> transient report -> end
- */
-export const generateTeamProgressReport = (teamId: string, forceRefresh = false): Promise<ITeamReportDoc> =>
-	runTeamReportGraph(teamId, forceRefresh);
+export const generateTeamProgressReport = (teamId: string, forceRefresh = false): Promise<ITeamReportDoc> => runTeamReportGraph(teamId, forceRefresh);
 
-/*
- * The three functions below are still single-shot prompt-and-parse calls — one
- * Claude request each, no branching, nothing to orchestrate. They stay on the
- * SDK directly until they grow steps worth graphing (retrieval, tool use, a
- * critique pass), at which point they move into graphs/ alongside the report.
- */
-
-// Course-level overview across all teams
 export const generateCourseOverview = async (courseId: string): Promise<string> => {
 	const teams = await Team.find({ courseId });
 	const since = activitySince();
@@ -119,7 +101,6 @@ Answer concisely and accurately based only on the data above. If the data doesn'
 	return firstTextBlock(message);
 };
 
-// Natural language query scoped to a single team
 export const answerTeamQuery = async (query: string, teamId: string): Promise<string> => {
 	const team = await Team.findById(teamId);
 	if (!team) throw new Error('Team not found');
@@ -177,15 +158,6 @@ export interface AutoCheckMilestonesResult {
 	stillPending: MilestoneCheckResult[];
 }
 
-/**
- * Looks at everything recorded for a team (commits, PRs, document edits) and asks
- * Claude which of its still-open milestones the evidence actually supports as done.
- * Conservative by design, in both directions:
- *   - a milestone is only ever flipped NOT-done -> done, never the reverse, so a
- *     professor's manual "done" always sticks regardless of what the AI thinks later
- *   - the AI is instructed to leave a milestone pending whenever the evidence is
- *     ambiguous rather than guess
- */
 export const autoCheckMilestones = async (teamId: string): Promise<AutoCheckMilestonesResult> => {
 	const team = await Team.findById(teamId);
 	if (!team) throw new Error('Team not found');
@@ -195,26 +167,14 @@ export const autoCheckMilestones = async (teamId: string): Promise<AutoCheckMile
 		return { checked: 0, newlyCompleted: [], stillPending: [] };
 	}
 
-	// Full history, not the rolling 7-day window the status report uses — a
-	// milestone finished three weeks ago should still count as done. Capped so a
-	// very long-running project doesn't blow up the prompt.
 	const MAX_ACTIVITY_EVENTS = 500;
 	const allActivity = await ActivityLog.find({ teamId }).sort({ timestamp: 1 });
 	const activity = allActivity.length > MAX_ACTIVITY_EVENTS ? allActivity.slice(-MAX_ACTIVITY_EVENTS) : allActivity;
 
-	const milestoneList = pending
-		.map(
-			(m, i) =>
-				`${i + 1}. [id: ${m._id}] "${m.title}"${m.description ? ` — ${m.description}` : ''} (due ${new Date(m.dueDate).toISOString().slice(0, 10)})`,
-		)
-		.join('\n');
+	const milestoneList = pending.map((m, i) => `${i + 1}. [id: ${m._id}] "${m.title}"${m.description ? ` — ${m.description}` : ''} (due ${new Date(m.dueDate).toISOString().slice(0, 10)})`).join('\n');
 
 	const activityList =
-		activity.length === 0
-			? 'No activity recorded yet.'
-			: activity
-					.map((a) => `- [${a.type.toUpperCase()}] ${a.description} (by ${a.studentEmail || 'unknown'}) at ${a.timestamp.toISOString().slice(0, 10)}`)
-					.join('\n');
+		activity.length === 0 ? 'No activity recorded yet.' : activity.map((a) => `- [${a.type.toUpperCase()}] ${a.description} (by ${a.studentEmail || 'unknown'}) at ${a.timestamp.toISOString().slice(0, 10)}`).join('\n');
 
 	const prompt = `
 You are an AI assistant helping a university professor determine which project milestones a student team has genuinely completed, based on the team's actual recorded project activity (GitHub commits/PRs, Google Docs/Sheets/Slides edits).

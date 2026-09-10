@@ -11,9 +11,7 @@ export interface IMilestone {
 	description?: string;
 	dueDate: Date;
 	completed: boolean;
-	/** Links this per-team copy back to the course-wide milestone it was seeded
-	 *  from, so editing/deleting it on the course page can find every copy.
-	 *  Absent for any milestone that predates this linkage (legacy data). */
+
 	courseMilestoneId?: Types.ObjectId;
 }
 
